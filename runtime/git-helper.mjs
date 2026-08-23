@@ -73,11 +73,9 @@ function localArgs(input) {
     case "stash_push": return ["stash", "push", ...(input.message ? ["--message", input.message] : []), ...(paths.length ? ["--", ...paths] : [])];
     case "stash_pop": return ["stash", "pop"];
     case "pull_merge": {
-      const remote = safeRemote(input.remote);
-      const target = input.branch
-        ? `${remote}/${safeRef(input.branch, "branch")}`
-        : "FETCH_HEAD";
-      return ["merge", "--ff-only", target];
+      safeRemote(input.remote);
+      if (input.branch) safeRef(input.branch, "branch");
+      return ["merge", "--ff-only", "FETCH_HEAD"];
     }
     default: fail("Unsupported local Git operation.");
   }
@@ -145,18 +143,57 @@ function runGit(args, { env = {}, secrets = [] } = {}) {
   });
 }
 
+export function parseGithubRemoteUrl(value) {
+  const scpMatch = value.match(
+    /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/
+  );
+  if (scpMatch) {
+    const [, owner, repository] = scpMatch;
+    return {
+      url: `https://github.com/${owner}/${repository}.git`,
+      owner,
+      repository,
+      configured_scheme: "ssh",
+    };
+  }
+
+  let parsed;
+  try { parsed = new URL(value); } catch { fail("Remote must be a GitHub HTTPS or SSH URL."); }
+  const scheme = parsed.protocol === "https:"
+    ? "https"
+    : parsed.protocol === "ssh:"
+      ? "ssh"
+      : null;
+  const validAuthentication = scheme === "https"
+    ? !parsed.username && !parsed.password
+    : parsed.username === "git" && !parsed.password;
+  if (
+    !scheme ||
+    parsed.hostname.toLowerCase() !== "github.com" ||
+    parsed.port ||
+    parsed.search ||
+    parsed.hash ||
+    !validAuthentication
+  ) {
+    fail("Remote must be a credential-free GitHub HTTPS or SSH URL.");
+  }
+  const match = parsed.pathname.match(
+    /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/
+  );
+  if (!match) fail("Remote URL must identify one GitHub owner/repository.");
+  const [, owner, repository] = match;
+  return {
+    url: `https://github.com/${owner}/${repository}.git`,
+    owner,
+    repository,
+    configured_scheme: scheme,
+  };
+}
+
 export async function remoteUrl(remote, gitRunner = runGit) {
   const result = await gitRunner(["remote", "get-url", remote]);
   if (result.exit_code !== 0) fail("Git remote does not exist.");
-  const value = result.stdout.trim();
-  let parsed;
-  try { parsed = new URL(value); } catch { fail("Remote must be an HTTPS GitHub URL."); }
-  if (parsed.protocol !== "https:" || parsed.hostname.toLowerCase() !== "github.com" || parsed.username || parsed.password) {
-    fail("Remote must be a credential-free HTTPS github.com URL.");
-  }
-  const match = parsed.pathname.match(/^\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/);
-  if (!match) fail("Remote URL must identify one GitHub owner/repository.");
-  return { url: value, owner: match[1], repository: match[2] };
+  return parseGithubRemoteUrl(result.stdout.trim());
 }
 
 async function installationToken(repository) {
@@ -181,13 +218,16 @@ async function installationToken(repository) {
 
 export async function remoteArgs(input, urlResolver = remoteUrl) {
   const remote = safeRemote(input.remote);
-  await urlResolver(remote);
+  const identity = await urlResolver(remote);
+  const transportUrl = identity.url;
   switch (input.operation) {
-    case "fetch": return ["fetch", "--no-tags", "--prune", remote, ...(input.branch ? [safeRef(input.branch, "branch")] : [])];
-    case "pull": return ["fetch", "--no-tags", remote, ...(input.branch ? [safeRef(input.branch, "branch")] : [])];
-    case "push": return ["push", remote, safeRef(input.branch, "branch")];
-    case "push_dry_run": return ["push", "--dry-run", remote, safeRef(input.branch, "branch")];
-    case "ls_remote": return ["ls-remote", remote, ...(input.branch ? [safeRef(input.branch, "branch")] : [])];
+    case "fetch": return input.branch
+      ? ["fetch", "--no-tags", transportUrl, safeRef(input.branch, "branch")]
+      : ["fetch", "--no-tags", "--prune", transportUrl, `+refs/heads/*:refs/remotes/${remote}/*`];
+    case "pull": return ["fetch", "--no-tags", transportUrl, ...(input.branch ? [safeRef(input.branch, "branch")] : [])];
+    case "push": return ["push", transportUrl, safeRef(input.branch, "branch")];
+    case "push_dry_run": return ["push", "--dry-run", transportUrl, safeRef(input.branch, "branch")];
+    case "ls_remote": return ["ls-remote", transportUrl, ...(input.branch ? [safeRef(input.branch, "branch")] : [])];
     case "auth_check": return [];
     default: fail("Unsupported remote Git operation.");
   }
@@ -216,6 +256,7 @@ export async function verifyRepositoryAccess(identity, token, fetchImpl = fetch)
     repository_authorized: true,
     repository: `${identity.owner}/${identity.repository}`,
     remote_scheme: "https",
+    configured_remote_scheme: identity.configured_scheme,
     permissions: { contents: "write", workflows: "write" },
     credential_exposed: false,
   };

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,12 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { requiredConfiguration } from "./runtime/config.mjs";
 import { GIT_REMOTE_OPERATIONS, gitRemoteSchema } from "./runtime/schemas.mjs";
+import {
+  createOfficialContainerCleanup,
+  officialContainerName,
+} from "./runtime/lifecycle.mjs";
 
 const VERSION = packageJson.version;
 const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -25,10 +30,11 @@ const GITHUB_IMAGE = "ghcr.io/github/github-mcp-server";
 const CONTAINER_PEM_PATH = "/secrets/github-app.pem";
 const TOOLSETS = "context,issues,pull_requests,actions,projects";
 
-// Defaults come from the user's working VS Code GitHub MCP configuration.
-const DEFAULT_APP_ID = "4618233";
-const DEFAULT_INSTALLATION_ID = "154276908";
 const MAX_OUTPUT_BYTES = 256 * 1024;
+const OFFICIAL_CONTAINER_NAME = officialContainerName(
+  process.pid,
+  randomBytes(8).toString("hex")
+);
 
 const server = new Server(
   { name: "github-app-mcp", version: VERSION },
@@ -39,29 +45,21 @@ let githubClient;
 let githubTransport;
 let officialToolsPromise;
 let runtimeImagePromise;
+let shutdownPromise;
 
-function requiredConfiguration() {
-  const appId = process.env.GITHUB_APP_ID || DEFAULT_APP_ID;
-  const installationId =
-    process.env.GITHUB_APP_INSTALLATION_ID || DEFAULT_INSTALLATION_ID;
-  const pemPath = process.env.GITHUB_APP_PRIVATE_KEY_PATH;
-
-  if (!/^\d+$/.test(appId) || !/^\d+$/.test(installationId)) {
-    throw new Error("GitHub App ID and installation ID must be numeric.");
-  }
-  if (!pemPath) {
-    throw new Error(
-      "GITHUB_APP_PRIVATE_KEY_PATH must identify the GitHub App PEM on the host."
-    );
-  }
-
-  const resolvedPemPath = fs.realpathSync.native(path.resolve(pemPath));
-  if (!fs.statSync(resolvedPemPath).isFile()) {
-    throw new Error("GITHUB_APP_PRIVATE_KEY_PATH must identify a regular file.");
-  }
-
-  return { appId, installationId, pemPath: resolvedPemPath };
-}
+const cleanupOfficialContainer = createOfficialContainerCleanup({
+  getTransport: () => githubTransport,
+  clearTransport: () => {
+    githubTransport = undefined;
+    githubClient = undefined;
+    officialToolsPromise = undefined;
+  },
+  removeContainer: async () => {
+    await runProcess("docker", ["rm", "--force", OFFICIAL_CONTAINER_NAME], {
+      timeoutMs: 15_000,
+    });
+  },
+});
 
 function runProcess(command, args, { input = "", timeoutMs = 60_000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -264,6 +262,12 @@ async function connectOfficialGithub() {
         "run",
         "-i",
         "--rm",
+        "--name",
+        OFFICIAL_CONTAINER_NAME,
+        "--label",
+        "com.brycepelletier.github-app-mcp.role=official-server",
+        "--stop-timeout",
+        "5",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges:true",
         "--mount",
@@ -287,10 +291,7 @@ async function connectOfficialGithub() {
     const listed = await githubClient.listTools();
     return listed.tools ?? [];
   })().catch(async (error) => {
-    officialToolsPromise = undefined;
-    try {
-      await githubTransport?.close();
-    } catch {}
+    await cleanupOfficialContainer();
     throw error;
   });
   return officialToolsPromise;
@@ -371,15 +372,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   return githubClient.callTool({ name, arguments: rawArgs });
 });
 
-async function shutdown() {
-  try {
-    await githubTransport?.close();
-  } finally {
-    process.exit(0);
-  }
+function shutdown(exitCode = 0) {
+  if (shutdownPromise) return shutdownPromise;
+
+  shutdownPromise = (async () => {
+    try {
+      await cleanupOfficialContainer();
+      await server.close();
+    } catch {
+      exitCode = 1;
+    } finally {
+      process.exit(exitCode);
+    }
+  })();
+
+  return shutdownPromise;
 }
 
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
+process.on("SIGHUP", () => void shutdown());
+process.stdin.once("end", () => void shutdown());
+process.stdin.once("close", () => void shutdown());
+process.stdin.once("error", () => void shutdown(1));
+process.stdout.once("error", () => void shutdown(1));
+process.on("uncaughtException", () => void shutdown(1));
+process.on("unhandledRejection", () => void shutdown(1));
 
 await server.connect(new StdioServerTransport());

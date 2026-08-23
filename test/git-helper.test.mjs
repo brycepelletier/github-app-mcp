@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   baseGitArgs,
+  parseGithubRemoteUrl,
   remoteArgs,
   remoteUrl,
   safeRef,
@@ -11,7 +12,12 @@ import {
 } from "../runtime/git-helper.mjs";
 import { gitRemoteSchema } from "../runtime/schemas.mjs";
 
-const validIdentity = { owner: "owner", repository: "repository" };
+const validIdentity = {
+  url: "https://github.com/owner/repository.git",
+  owner: "owner",
+  repository: "repository",
+  configured_scheme: "https",
+};
 const resolveValidRemote = async () => validIdentity;
 
 test("auth_check and push_dry_run are bounded remote operations", async () => {
@@ -20,7 +26,7 @@ test("auth_check and push_dry_run are bounded remote operations", async () => {
   assert.deepEqual(await remoteArgs({ operation: "auth_check", remote: "origin" }, resolveValidRemote), []);
   assert.deepEqual(
     await remoteArgs({ operation: "push_dry_run", remote: "origin", branch: "main" }, resolveValidRemote),
-    ["push", "--dry-run", "origin", "main"]
+    ["push", "--dry-run", "https://github.com/owner/repository.git", "main"]
   );
 });
 
@@ -41,17 +47,34 @@ test("remote and ref validation reject injection primitives", () => {
   }
 });
 
-test("remote URL accepts only credential-free github.com HTTPS", async () => {
+test("remote URL canonicalizes credential-free GitHub HTTPS and SSH", async () => {
   const runner = (url) => async () => ({ exit_code: 0, stdout: `${url}\n` });
   assert.deepEqual(await remoteUrl("origin", runner("https://github.com/owner/repository.git")), {
     url: "https://github.com/owner/repository.git", owner: "owner", repository: "repository",
+    configured_scheme: "https",
   });
   for (const url of [
     "git@github.com:owner/repository.git",
     "ssh://git@github.com/owner/repository.git",
+  ]) {
+    assert.deepEqual(await remoteUrl("origin", runner(url)), {
+      url: "https://github.com/owner/repository.git", owner: "owner", repository: "repository",
+      configured_scheme: "ssh",
+    });
+  }
+  for (const url of [
+    "git@gitlab.com:owner/repository.git",
+    "ssh://other@github.com/owner/repository.git",
     "https://gitlab.com/owner/repository.git",
     "https://x-access-token:secret@github.com/owner/repository.git",
   ]) await assert.rejects(() => remoteUrl("origin", runner(url)));
+});
+
+test("GitHub SSH parsing never changes the configured remote", () => {
+  const identity = parseGithubRemoteUrl("git@github.com:owner/repository.git");
+  assert.equal(identity.configured_scheme, "ssh");
+  assert.equal(identity.url, "https://github.com/owner/repository.git");
+  assert.equal(Object.hasOwn(identity, "configured_url"), false);
 });
 
 test("base Git environment disables hooks, signing, file transport, and submodules", () => {
@@ -82,7 +105,8 @@ test("repository verification returns fixed data and never consumes a response b
   assert.equal(bodyRead, false);
   assert.deepEqual(result, {
     authenticated: true, repository_authorized: true, repository: "owner/repository",
-    remote_scheme: "https", permissions: { contents: "write", workflows: "write" },
+    remote_scheme: "https", configured_remote_scheme: "https",
+    permissions: { contents: "write", workflows: "write" },
     credential_exposed: false,
   });
 });
@@ -104,7 +128,7 @@ test("structured construction exposes no arbitrary command or host path fields",
     executable: "sh", shell: "rm -rf /", args: ["--force"], docker_args: ["--privileged"],
     workspace: "C:\\secret", pem_path: "/secret.pem",
   };
-  assert.deepEqual(await remoteArgs(input, resolveValidRemote), ["push", "--dry-run", "origin", "main"]);
+  assert.deepEqual(await remoteArgs(input, resolveValidRemote), ["push", "--dry-run", "https://github.com/owner/repository.git", "main"]);
   for (const field of ["executable", "shell", "args", "docker_args", "workspace", "pem_path"]) {
     assert.throws(() => gitRemoteSchema.parse({ operation: "auth_check", [field]: input[field] }));
   }

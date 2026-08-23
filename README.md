@@ -44,8 +44,9 @@ array. Its container has real `.git`, but no network and no credential material.
 
 `git_remote` accepts only `fetch`, fast-forward-only `pull`, `push`, `ls_remote`,
 `auth_check`, and `push_dry_run`, with bounded remote/ref fields. It requires a credential-free
-`https://github.com/owner/repository` remote, derives repository identity from
-that configured remote, and requests an installation token restricted to that
+GitHub HTTPS or SSH remote, derives repository identity from that configured
+remote, canonicalizes SSH forms to credential-free HTTPS internally without
+changing `.git/config`, and requests an installation token restricted to that
 repository with `contents:write` and `workflows:write`. The token is minted inside
 the ephemeral runtime, supplied to Git through a private askpass helper, redacted
 from output, and discarded with the container. `pull` performs authenticated
@@ -132,18 +133,20 @@ No unrelated toolsets are silently enabled.
 
 ## Configuration and provenance
 
-The launcher recognizes:
+The launcher requires all three external configuration values and fails closed
+before starting an authenticated container if any is absent or invalid:
 
-- `GITHUB_APP_ID` — defaults to `4618233`.
-- `GITHUB_APP_INSTALLATION_ID` — defaults to `154276908`.
+- `GITHUB_APP_ID` — positive numeric GitHub App identifier.
+- `GITHUB_APP_INSTALLATION_ID` — positive numeric installation identifier.
 - `GITHUB_APP_PRIVATE_KEY_PATH` — required absolute or resolvable host path.
 
-The two numeric defaults are documented working values from the user's existing
-VS Code GitHub MCP configuration and earlier compose setup for GitHub App
-`bp-agent-github-app`. They are defaults, not unexplained package-wide secrets,
-and may be overridden. The GitHub installation/settings page remains the source
-of truth for repository access. The App was originally installed for
-`brycepelletier/environment-controller`.
+The known working values `GITHUB_APP_ID=4618233` and
+`GITHUB_APP_INSTALLATION_ID=154276908` come from the user's existing VS Code
+GitHub MCP configuration and earlier compose setup for GitHub App
+`bp-agent-github-app`. They are documented provenance for this deployment, not
+package defaults. Every installation must provide its own values. The GitHub
+installation/settings page remains the source of truth for repository access.
+The App was originally installed for `brycepelletier/environment-controller`.
 
 The package deliberately has no default host PEM filename. Earlier material only
 establishes that it was somewhere below `C:/Users/bryce/.ssh/`; that is not enough
@@ -163,6 +166,13 @@ The official GitHub child server starts lazily when tools are listed or an API
 tool is called. Git runtime images build lazily on the first Git operation and are
 reused by a package-version/content-derived local tag; Git operation containers
 are ephemeral (`--rm`). SIGINT/SIGTERM closes the official child transport.
+
+The official GitHub container has a unique infrastructure-generated name for
+each facade process. MCP stdin EOF/close, SIGINT, SIGTERM, SIGHUP, and fatal
+process errors trigger idempotent cleanup: the facade closes the child transport
+and then explicitly removes its own named container as a fallback. Container
+names and cleanup targets are never accepted from MCP tool input, and concurrent
+VS Code sessions do not share a cleanup target.
 
 ## Local linking
 
@@ -188,8 +198,10 @@ Provide the host PEM path as environment configuration and expose one MCP entry:
     "github": {
       "type": "stdio",
       "command": "npx",
-      "args": ["--yes", "@brycepelletier/github-app-mcp@0.2.0"],
+      "args": ["--yes", "@brycepelletier/github-app-mcp@0.3.0"],
       "env": {
+        "GITHUB_APP_ID": "4618233",
+        "GITHUB_APP_INSTALLATION_ID": "154276908",
         "GITHUB_APP_PRIVATE_KEY_PATH": "<exact-host-path-to-existing-pem>"
       }
     }
@@ -197,8 +209,8 @@ Provide the host PEM path as environment configuration and expose one MCP entry:
 }
 ```
 
-The working App and installation IDs need not be repeated unless overriding the
-documented defaults.
+All three values are mandatory. The numeric identifiers select the caller's App
+and installation; the package never supplies a tenant-specific identity.
 
 ## Migration from `github-token-broker`
 
@@ -208,7 +220,10 @@ is retired: this package has no HTTP listener, credential endpoint, or token
 response. Existing broker source is retained for audit/migration history but is
 not shipped by this package.
 
-After this package is operational, follow up in `agent-env-mcp` by removing its
-Git service and public `git_command`. That is intentionally outside this change.
-The engineering service must continue masking real `.git` and must never receive
-the PEM, installation tokens, or GitHub MCP tools.
+As of `agent-env-mcp` 0.4.0, its Git service and public `git_command` have been
+removed. The engineering service continues masking real `.git` and never
+receives the PEM, installation tokens, or GitHub MCP tools.
+
+## License
+
+MIT. See `LICENSE`.
