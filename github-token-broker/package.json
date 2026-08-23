@@ -1,0 +1,8 @@
+{
+  "name": "github-token-broker",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@octokit/auth-app": "8.3.0"
+  }
+}

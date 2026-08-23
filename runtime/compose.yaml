@@ -1,0 +1,20 @@
+services:
+  git-local:
+    build:
+      context: ..
+      dockerfile: runtime/Dockerfile
+    network_mode: none
+    working_dir: /workspace
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  git-remote:
+    build:
+      context: ..
+      dockerfile: runtime/Dockerfile
+    working_dir: /workspace
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+# The trusted host launcher supplies workspace and PEM mounts. This file is for
+# image/config validation only; it intentionally contains no host secret path.
