@@ -15,6 +15,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { GIT_REMOTE_OPERATIONS, gitRemoteSchema } from "./runtime/schemas.mjs";
 
 const VERSION = packageJson.version;
 const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -309,12 +310,6 @@ const gitLocalSchema = z.object({
   max_count: z.number().int().min(1).max(200).optional(),
 });
 
-const gitRemoteSchema = z.object({
-  operation: z.enum(["fetch", "pull", "push", "ls_remote"]),
-  remote: z.string().min(1).max(128).optional().default("origin"),
-  branch: z.string().min(1).max(256).optional(),
-});
-
 const customTools = [
   {
     name: "git_local",
@@ -340,7 +335,7 @@ const customTools = [
     inputSchema: {
       type: "object",
       properties: {
-        operation: { type: "string", enum: gitRemoteSchema.shape.operation.options },
+        operation: { type: "string", enum: GIT_REMOTE_OPERATIONS },
         remote: { type: "string" },
         branch: { type: "string" },
       },

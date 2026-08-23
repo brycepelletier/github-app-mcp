@@ -42,8 +42,8 @@ Local Git and remote Git have different execution modes. `git_local` exposes an
 operation enum and typed fields rather than a shell or arbitrary Git argument
 array. Its container has real `.git`, but no network and no credential material.
 
-`git_remote` accepts only `fetch`, fast-forward-only `pull`, `push`, and
-`ls_remote`, with bounded remote/ref fields. It requires a credential-free
+`git_remote` accepts only `fetch`, fast-forward-only `pull`, `push`, `ls_remote`,
+`auth_check`, and `push_dry_run`, with bounded remote/ref fields. It requires a credential-free
 `https://github.com/owner/repository` remote, derives repository identity from
 that configured remote, and requests an installation token restricted to that
 repository with `contents:write` and `workflows:write`. The token is minted inside
@@ -55,6 +55,65 @@ Git hooks, global/system configuration, file transport, submodule recursion,
 interactive editors, GPG signing, and terminal credential prompts are disabled.
 Output is bounded and scrubbed for GitHub token patterns and credential-bearing
 URLs.
+
+## Authentication verification
+
+`git ls-remote` is not proof of authentication: it can succeed anonymously for
+a public repository. `auth_check` instead mints a repository-restricted
+installation token and calls GitHub's authenticated repository endpoint. Its
+fixed response confirms App authentication and repository authorization without
+returning the API response or any credential:
+
+```json
+{ "operation": "auth_check", "remote": "origin" }
+```
+
+```json
+{
+  "authenticated": true,
+  "repository_authorized": true,
+  "repository": "owner/repository",
+  "remote_scheme": "https",
+  "permissions": { "contents": "write", "workflows": "write" },
+  "credential_exposed": false
+}
+```
+
+`push_dry_run` additionally proves that authenticated Git HTTPS transport can
+negotiate a push. The runtime always inserts `--dry-run`; callers cannot supply
+Git arguments, force flags, or deletion refspecs. GitHub evaluates the proposed
+update, but neither local nor remote refs are changed.
+
+```json
+{ "operation": "push_dry_run", "remote": "origin", "branch": "main" }
+```
+
+```json
+{
+  "authenticated": true,
+  "transport": "https",
+  "dry_run": true,
+  "exit_code": 0,
+  "signal": null,
+  "stdout": "",
+  "stderr": "Everything up-to-date\n",
+  "truncated": false,
+  "credential_exposed": false,
+  "summary": "Authenticated push dry run succeeded; no refs were changed."
+}
+```
+
+These checks require an installed App with the requested `contents:write` and
+`workflows:write` permissions, repository access, network access, and an exact
+configured PEM path. They do not prove that unrelated repositories are
+authorized and do not inspect branch-protection outcomes beyond GitHub's dry-run
+response.
+
+Run automated checks with `npm test` or the full local package validation with
+`npm run validate`. Optional live verification should record the remote branch
+object ID with `git ls-remote` before and after `auth_check` and `push_dry_run`,
+then confirm the IDs match and all returned `credential_exposed` fields are
+false. Never substitute a normal push.
 
 GitHub Issues, pull requests, reviews, Actions, Projects, and searches are not
 reimplemented. They are proxied over MCP to:
@@ -129,7 +188,7 @@ Provide the host PEM path as environment configuration and expose one MCP entry:
     "github": {
       "type": "stdio",
       "command": "npx",
-      "args": ["--yes", "@brycepelletier/github-app-mcp@0.1.0"],
+      "args": ["--yes", "@brycepelletier/github-app-mcp@0.2.0"],
       "env": {
         "GITHUB_APP_PRIVATE_KEY_PATH": "<exact-host-path-to-existing-pem>"
       }

@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { createAppAuth } from "@octokit/auth-app";
 
 const WORKSPACE = "/workspace";
@@ -33,12 +34,12 @@ async function readPayload() {
   }
 }
 
-function safeRef(value, field) {
+export function safeRef(value, field) {
   if (typeof value !== "string" || !REF.test(value)) fail(`${field} is not a safe Git ref.`);
   return value;
 }
 
-function safeRemote(value = "origin") {
+export function safeRemote(value = "origin") {
   if (!REMOTE.test(value)) fail("remote is not a safe Git remote name.");
   return value;
 }
@@ -82,7 +83,7 @@ function localArgs(input) {
   }
 }
 
-function baseGitArgs(args) {
+export function baseGitArgs(args) {
   return [
     "-c", `safe.directory=${WORKSPACE}`,
     "-c", "core.hooksPath=/dev/null",
@@ -95,12 +96,13 @@ function baseGitArgs(args) {
   ];
 }
 
-function scrub(text, secrets = []) {
+export function scrub(text, secrets = []) {
   let result = String(text || "");
   for (const secret of secrets) if (secret) result = result.split(secret).join("[REDACTED]");
   result = result
     .replace(/gh[opsu]_[A-Za-z0-9_]{20,}/g, "[REDACTED]")
-    .replace(/x-access-token:[^@\s]+@/gi, "x-access-token:[REDACTED]@");
+    .replace(/https:\/\/x-access-token:[^@\s]+@github\.com\/[^\s]+/gi, "[REDACTED]")
+    .replace(/x-access-token:[^@\s]+@/gi, "[REDACTED]");
   return result;
 }
 
@@ -143,8 +145,8 @@ function runGit(args, { env = {}, secrets = [] } = {}) {
   });
 }
 
-async function remoteUrl(remote) {
-  const result = await runGit(["remote", "get-url", remote]);
+export async function remoteUrl(remote, gitRunner = runGit) {
+  const result = await gitRunner(["remote", "get-url", remote]);
   if (result.exit_code !== 0) fail("Git remote does not exist.");
   const value = result.stdout.trim();
   let parsed;
@@ -161,28 +163,62 @@ async function installationToken(repository) {
   const appId = Number(process.env.GITHUB_APP_ID);
   const installationId = Number(process.env.GITHUB_APP_INSTALLATION_ID);
   const pemPath = process.env.GITHUB_APP_PRIVATE_KEY_PATH;
-  if (!appId || !installationId || pemPath !== "/secrets/github-app.pem") fail("Remote Git authentication is not configured.");
+  if (!appId || !installationId || pemPath !== "/secrets/github-app.pem") fail("required GitHub App configuration is missing");
   const privateKey = await fsp.readFile(pemPath, "utf8");
   const auth = createAppAuth({ appId, privateKey });
-  const result = await auth({
-    type: "installation",
-    installationId,
-    repositoryNames: [repository],
-    permissions: { contents: "write", workflows: "write" },
-  });
-  return result.token;
+  try {
+    const result = await auth({
+      type: "installation",
+      installationId,
+      repositoryNames: [repository],
+      permissions: { contents: "write", workflows: "write" },
+    });
+    return result.token;
+  } catch {
+    fail("GitHub App authentication failed");
+  }
 }
 
-async function remoteArgs(input) {
+export async function remoteArgs(input, urlResolver = remoteUrl) {
   const remote = safeRemote(input.remote);
-  await remoteUrl(remote);
+  await urlResolver(remote);
   switch (input.operation) {
     case "fetch": return ["fetch", "--no-tags", "--prune", remote, ...(input.branch ? [safeRef(input.branch, "branch")] : [])];
     case "pull": return ["fetch", "--no-tags", remote, ...(input.branch ? [safeRef(input.branch, "branch")] : [])];
     case "push": return ["push", remote, safeRef(input.branch, "branch")];
+    case "push_dry_run": return ["push", "--dry-run", remote, safeRef(input.branch, "branch")];
     case "ls_remote": return ["ls-remote", remote, ...(input.branch ? [safeRef(input.branch, "branch")] : [])];
+    case "auth_check": return [];
     default: fail("Unsupported remote Git operation.");
   }
+}
+
+export async function verifyRepositoryAccess(identity, token, fetchImpl = fetch) {
+  let response;
+  try {
+    response = await fetchImpl(
+      `https://api.github.com/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repository)}`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        signal: AbortSignal.timeout(30_000),
+      }
+    );
+  } catch {
+    fail("GitHub App authentication failed");
+  }
+  if (!response.ok) fail("installation cannot access repository");
+  return {
+    authenticated: true,
+    repository_authorized: true,
+    repository: `${identity.owner}/${identity.repository}`,
+    remote_scheme: "https",
+    permissions: { contents: "write", workflows: "write" },
+    credential_exposed: false,
+  };
 }
 
 async function main() {
@@ -200,20 +236,40 @@ async function main() {
   const remote = safeRemote(input.remote);
   const identity = await remoteUrl(remote);
   const token = await installationToken(identity.repository);
+  if (input.operation === "auth_check") {
+    const result = await verifyRepositoryAccess(identity, token);
+    process.stdout.write(JSON.stringify({ ok: true, result }));
+    return;
+  }
   const askpass = "/tmp/github-app-mcp/askpass.sh";
   await fsp.mkdir(path.dirname(askpass), { recursive: true, mode: 0o700 });
   await fsp.writeFile(askpass, "#!/bin/sh\ncase \"$1\" in *Username*) printf '%s\\n' x-access-token;; *) printf '%s\\n' \"$GITHUB_APP_TOKEN\";; esac\n", { mode: 0o700 });
 
-  const result = await runGit(await remoteArgs(input), {
+  const gitResult = await runGit(await remoteArgs(input), {
     env: { GIT_ASKPASS: askpass, GITHUB_APP_TOKEN: token },
     secrets: [token],
   });
 
+  const result = input.operation === "push_dry_run"
+    ? {
+        authenticated: gitResult.exit_code === 0,
+        transport: "https",
+        dry_run: true,
+        ...gitResult,
+        credential_exposed: false,
+        summary: gitResult.exit_code === 0
+          ? "Authenticated push dry run succeeded; no refs were changed."
+          : "Authenticated push dry run failed; no refs were changed.",
+      }
+    : gitResult;
+
   process.stdout.write(JSON.stringify({ ok: true, result }));
 }
 
-main().catch((error) => {
-  process.stdout.write(JSON.stringify({ ok: false, error: error?.exposed ? error.message : "Git operation failed inside the trusted runtime." }));
-  if (!error?.exposed) console.error("github-app-mcp git runtime failure");
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    process.stdout.write(JSON.stringify({ ok: false, error: error?.exposed ? error.message : "Git operation failed inside the trusted runtime." }));
+    if (!error?.exposed) console.error("github-app-mcp git runtime failure");
+    process.exitCode = 1;
+  });
+}

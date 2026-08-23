@@ -1,6 +1,6 @@
 {
   "name": "@brycepelletier/github-app-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Capability-focused MCP facade for bounded Git and official GitHub App operations.",
   "type": "module",
   "bin": {
@@ -17,9 +17,10 @@
     "node": ">=24"
   },
   "scripts": {
-    "link": "node --check ./index.mjs && node --check ./runtime/git-helper.mjs && npm install && npm link",
+    "link": "node --check ./index.mjs && node --check ./runtime/git-helper.mjs && node --check ./runtime/schemas.mjs && npm install && npm link",
     "unlink": "npm uninstall --global @brycepelletier/github-app-mcp",
-    "validate": "node --check ./index.mjs && node --check ./runtime/git-helper.mjs && npm pack --dry-run"
+    "test": "node --test",
+    "validate": "node --check ./index.mjs && node --check ./runtime/git-helper.mjs && node --check ./runtime/schemas.mjs && npm test && npm pack --dry-run"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.15.0",
