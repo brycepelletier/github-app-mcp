@@ -8,6 +8,7 @@ import {
   safeRef,
   safeRemote,
   scrub,
+  stripDiffHunkCoordinates,
   verifyRepositoryAccess,
 } from "../runtime/git-helper.mjs";
 import { gitRemoteSchema } from "../runtime/schemas.mjs";
@@ -19,6 +20,20 @@ const validIdentity = {
   configured_scheme: "https",
 };
 const resolveValidRemote = async () => validIdentity;
+
+test("Git diff output omits source line coordinates", () => {
+  const diff = [
+    "diff --git a/example.txt b/example.txt",
+    "@@ -12,2 +12,3 @@ section",
+    " context",
+    "-old",
+    "+new",
+  ].join("\n");
+  const result = stripDiffHunkCoordinates(diff);
+  assert.equal(result.includes("-12,2 +12,3"), false);
+  assert.match(result, /^@@ section$/m);
+  assert.match(result, /^ context$/m);
+});
 
 test("auth_check and push_dry_run are bounded remote operations", async () => {
   assert.equal(gitRemoteSchema.parse({ operation: "auth_check" }).operation, "auth_check");

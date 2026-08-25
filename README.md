@@ -42,6 +42,10 @@ Local Git and remote Git have different execution modes. `git_local` exposes an
 operation enum and typed fields rather than a shell or arbitrary Git argument
 array. Its container has real `.git`, but no network and no credential material.
 
+`git_local` diff output preserves file headers and verbatim context/change lines
+but removes numeric hunk coordinates. No source line is prefixed with generated
+line-position metadata that could be mistaken for editable file content.
+
 `git_remote` accepts only `fetch`, fast-forward-only `pull`, `push`, `ls_remote`,
 `auth_check`, and `push_dry_run`, with bounded remote/ref fields. It requires a credential-free
 GitHub HTTPS or SSH remote, derives repository identity from that configured

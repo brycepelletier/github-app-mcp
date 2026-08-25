@@ -81,6 +81,13 @@ function localArgs(input) {
   }
 }
 
+export function stripDiffHunkCoordinates(output) {
+  return String(output).replace(
+    /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/gm,
+    "@@"
+  );
+}
+
 export function baseGitArgs(args) {
   return [
     "-c", `safe.directory=${WORKSPACE}`,
@@ -269,6 +276,9 @@ async function main() {
 
   if (mode === "local") {
     const result = await runGit(localArgs(input));
+    if (input.operation === "diff") {
+      result.stdout = stripDiffHunkCoordinates(result.stdout);
+    }
     process.stdout.write(JSON.stringify({ ok: true, result }));
     return;
   }
