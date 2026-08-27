@@ -15,12 +15,14 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { createAppAuth } from "@octokit/auth-app";
 import { requiredConfiguration } from "./runtime/config.mjs";
 import { GIT_REMOTE_OPERATIONS, gitRemoteSchema } from "./runtime/schemas.mjs";
 import {
   createOfficialContainerCleanup,
   officialContainerName,
 } from "./runtime/lifecycle.mjs";
+import { createRunnerCapabilityBroker } from "./runtime/runner-capability.mjs";
 
 const VERSION = packageJson.version;
 const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -46,6 +48,7 @@ let githubTransport;
 let officialToolsPromise;
 let runtimeImagePromise;
 let shutdownPromise;
+const runnerCapabilityBroker = createRunnerCapabilityBroker();
 
 const cleanupOfficialContainer = createOfficialContainerCleanup({
   getTransport: () => githubTransport,
@@ -297,6 +300,32 @@ async function connectOfficialGithub() {
   return officialToolsPromise;
 }
 
+const runnerRequestSchema = z.object({
+  request_id: z.string().regex(/^pr-[1-9][0-9]*-[1-9][0-9]*$/),
+  repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+  pr_number: z.number().int().positive(),
+  workflow: z.string().min(1).max(256),
+  workflow_run_id: z.number().int().positive(),
+  trigger: z.string().min(1).max(64),
+});
+
+async function mintRunnerRegistrationToken(repository) {
+  const config = requiredConfiguration();
+  const [owner, repo] = repository.split("/");
+  const auth = createAppAuth({ appId: Number(config.appId), installationId: Number(config.installationId), privateKey: fs.readFileSync(config.pemPath, "utf8") });
+  const installation = await auth({ type: "installation", installationId: Number(config.installationId), repositoryNames: [repo] });
+  const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runners/registration-token`, {
+    method: "POST",
+    headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${installation.token}`, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": `github-app-mcp/${VERSION}` },
+    redirect: "error",
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) throw new Error(`GitHub runner registration authorization failed with HTTP ${response.status}.`);
+  const payload = await response.json();
+  if (typeof payload.token !== "string") throw new Error("GitHub did not return a runner registration credential.");
+  return payload.token;
+}
+
 const gitLocalSchema = z.object({
   operation: z.enum([
     "status", "diff", "log", "show", "branch_list", "branch_create",
@@ -344,6 +373,17 @@ const customTools = [
       additionalProperties: false,
     },
   },
+  {
+    name: "actions_issue_runner_registration_capability",
+    description: "Authorize one correlated repository runner registration and return an opaque, single-use capability reference. The credential is never returned.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        request_id: { type: "string", pattern: "^pr-[1-9][0-9]*-[1-9][0-9]*$" }, repository: { type: "string" }, pr_number: { type: "integer", minimum: 1 }, workflow: { type: "string" }, workflow_run_id: { type: "integer", minimum: 1 }, trigger: { type: "string" }
+      },
+      required: ["request_id", "repository", "pr_number", "workflow", "workflow_run_id", "trigger"], additionalProperties: false,
+    },
+  },
 ];
 
 function textResult(value) {
@@ -364,6 +404,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "git_remote") {
     return textResult(await invokeGit("remote", gitRemoteSchema.parse(rawArgs)));
   }
+  if (name === "actions_issue_runner_registration_capability") {
+    const runnerRequest = runnerRequestSchema.parse(rawArgs);
+    const expectedRequestId = `pr-${runnerRequest.pr_number}-${runnerRequest.workflow_run_id}`;
+    if (runnerRequest.request_id !== expectedRequestId) throw new Error("request_id does not match pr_number and workflow_run_id.");
+    const token = await mintRunnerRegistrationToken(runnerRequest.repository);
+    const registrationCapability = await runnerCapabilityBroker.issue(token);
+    return textResult({ status: "RUNNER_REQUIRED", ...runnerRequest, required_labels: ["self-hosted", "linux", "x64", "environment-controller-ci"], runner_platform: "linux", runner_architecture: "x64", registration_capability: registrationCapability });
+  }
 
   const tools = await connectOfficialGithub();
   if (!tools.some((tool) => tool.name === name)) {
@@ -378,6 +426,7 @@ function shutdown(exitCode = 0) {
   shutdownPromise = (async () => {
     try {
       await cleanupOfficialContainer();
+      await runnerCapabilityBroker.close();
       await server.close();
     } catch {
       exitCode = 1;

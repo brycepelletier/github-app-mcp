@@ -135,6 +135,15 @@ GITHUB_TOOLSETS=context,issues,pull_requests,actions,projects
 
 No unrelated toolsets are silently enabled.
 
+The facade additionally exposes
+`actions_issue_runner_registration_capability`. It requests a repository runner
+registration token internally, stores it behind a random five-minute loopback
+capability, and returns only that single-use opaque reference. The Docker MCP
+consumes the reference with one POST; a second or expired exchange returns
+`410 Gone`. The App installation must grant repository administration write
+permission for GitHub's runner-registration endpoint in addition to the
+existing content/workflow permissions.
+
 ## Configuration and provenance
 
 The launcher requires all three external configuration values and fails closed
