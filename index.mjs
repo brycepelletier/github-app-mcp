@@ -23,6 +23,7 @@ import {
   officialContainerName,
 } from "./runtime/lifecycle.mjs";
 import { createRunnerCapabilityBroker } from "./runtime/runner-capability.mjs";
+import { classifyGithubToolFailure, gitErrorResult, githubToolErrorResult, guidedGitError } from "./runtime/git-guidance.mjs";
 
 const VERSION = packageJson.version;
 const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -232,7 +233,11 @@ async function invokeGit(mode, payload) {
     throw new Error("The trusted Git runtime returned an invalid response.");
   }
   if (result.code !== 0 || response.ok !== true) {
-    throw new Error(response.error || "Git operation failed inside the trusted runtime.");
+    throw guidedGitError({ mode, operation: payload.operation, payload, message: response.error || "Git operation failed inside the trusted runtime." });
+  }
+
+  if (response.result?.exit_code !== undefined && response.result.exit_code !== 0) {
+    throw guidedGitError({ mode, operation: payload.operation, payload, result: response.result });
   }
 
   if (mode === "remote" && payload.operation === "pull") {
@@ -343,7 +348,7 @@ const gitLocalSchema = z.object({
 const customTools = [
   {
     name: "git_local",
-    description: "Run one structured local Git operation with real .git, no credentials, and no network.",
+    description: "Run one structured local Git operation with real .git, no credentials, and no network. Failures return stable error codes and ordered next_actions naming the permitted recovery tools.",
     inputSchema: {
       type: "object",
       properties: {
@@ -361,7 +366,7 @@ const customTools = [
   },
   {
     name: "git_remote",
-    description: "Run a structured GitHub remote operation with internal, ephemeral GitHub App authentication.",
+    description: "Run a structured GitHub remote operation with internal, ephemeral GitHub App authentication. Failures return stable error codes and ordered next_actions; pull is fetch plus fast-forward-only local merge.",
     inputSchema: {
       type: "object",
       properties: {
@@ -375,7 +380,7 @@ const customTools = [
   },
   {
     name: "actions_issue_runner_registration_capability",
-    description: "Authorize one correlated repository runner registration and return an opaque, single-use capability reference. The credential is never returned.",
+    description: "For a queued Firmware PR validation or post-merge self-hosted run, authorize one correlated runner registration and return an opaque, single-use capability reference. The credential is never returned.",
     inputSchema: {
       type: "object",
       properties: {
@@ -399,10 +404,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: rawArgs = {} } = request.params;
   if (name === "git_local") {
-    return textResult(await invokeGit("local", gitLocalSchema.parse(rawArgs)));
+    try {
+      const payload = gitLocalSchema.parse(rawArgs);
+      return textResult(await invokeGit("local", payload));
+    } catch (error) {
+      return gitErrorResult(error);
+    }
   }
   if (name === "git_remote") {
-    return textResult(await invokeGit("remote", gitRemoteSchema.parse(rawArgs)));
+    try {
+      const payload = gitRemoteSchema.parse(rawArgs);
+      return textResult(await invokeGit("remote", payload));
+    } catch (error) {
+      return gitErrorResult(error);
+    }
   }
   if (name === "actions_issue_runner_registration_capability") {
     const runnerRequest = runnerRequestSchema.parse(rawArgs);
@@ -417,7 +432,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (!tools.some((tool) => tool.name === name)) {
     throw new Error(`Unknown tool: ${name}`);
   }
-  return githubClient.callTool({ name, arguments: rawArgs });
+  const officialResult = await githubClient.callTool({ name, arguments: rawArgs });
+  const guidance = classifyGithubToolFailure(name, rawArgs, officialResult);
+  return guidance ? githubToolErrorResult(guidance) : officialResult;
 });
 
 function shutdown(exitCode = 0) {
