@@ -1,6 +1,6 @@
 {
   "name": "@brycepelletier/github-app-mcp",
-  "version": "0.3.1",
+  "version": "0.5.0",
   "description": "Capability-focused MCP facade for bounded Git and official GitHub App operations.",
   "license": "MIT",
   "repository": {
@@ -33,7 +33,7 @@
     "link": "node --check ./index.mjs && node --check ./runtime/config.mjs && node --check ./runtime/git-helper.mjs && node --check ./runtime/lifecycle.mjs && node --check ./runtime/schemas.mjs && npm install && npm link",
     "unlink": "npm uninstall --global @brycepelletier/github-app-mcp",
     "test": "node --test",
-    "validate": "node --check ./index.mjs && node --check ./runtime/config.mjs && node --check ./runtime/git-helper.mjs && node --check ./runtime/lifecycle.mjs && node --check ./runtime/runner-capability.mjs && node --check ./runtime/schemas.mjs && npm test && npm pack --dry-run"
+    "validate": "node --check ./index.mjs && node --check ./runtime/config.mjs && node --check ./runtime/git-guidance.mjs && node --check ./runtime/git-helper.mjs && node --check ./runtime/lifecycle.mjs && node --check ./runtime/runner-capability.mjs && node --check ./runtime/schemas.mjs && npm test && npm pack --dry-run"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.15.0",

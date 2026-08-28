@@ -46,6 +46,14 @@ array. Its container has real `.git`, but no network and no credential material.
 but removes numeric hunk coordinates. No source line is prefixed with generated
 line-position metadata that could be mistaken for editable file content.
 
+Git validation and nonzero exits do not escape as raw MCP exceptions. The
+facade returns `isError` with a stable code, category, no-blind-retry policy,
+and ordered `next_actions` that name only authorized tools. Recognized cases
+include leading-colon/unsafe refs, missing revisions, non-fast-forward pushes,
+dirty worktrees, conflicts, authorization failures, and PR creation attempts
+whose head has no commits beyond the base. The last case directs the operator
+to update the existing PR head branch rather than inventing a replacement PR.
+
 `git_remote` accepts only `fetch`, fast-forward-only `pull`, `push`, `ls_remote`,
 `auth_check`, and `push_dry_run`, with bounded remote/ref fields. It requires a credential-free
 GitHub HTTPS or SSH remote, derives repository identity from that configured
