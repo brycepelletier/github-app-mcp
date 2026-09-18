@@ -203,6 +203,15 @@ export async function remoteUrl(remote, gitRunner = runGit) {
   return parseGithubRemoteUrl(result.stdout.trim());
 }
 
+export function safeAuthFailure(error) {
+  // Never expose upstream bodies, headers, URLs, request objects, or credentials.
+  const status = Number(error?.status);
+  if (Number.isInteger(status) && status >= 400 && status <= 599) return `GitHub App authentication failed (HTTP ${status})`;
+  const code = error?.cause?.code || error?.code;
+  if (['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'].includes(code)) return `GitHub App authentication failed (network ${code})`;
+  return 'GitHub App authentication failed';
+}
+
 async function installationToken(repository) {
   const appId = Number(process.env.GITHUB_APP_ID);
   const installationId = Number(process.env.GITHUB_APP_INSTALLATION_ID);
@@ -218,8 +227,8 @@ async function installationToken(repository) {
       permissions: { contents: "write", workflows: "write" },
     });
     return result.token;
-  } catch {
-    fail("GitHub App authentication failed");
+  } catch (error) {
+    fail(safeAuthFailure(error));
   }
 }
 
@@ -254,10 +263,10 @@ export async function verifyRepositoryAccess(identity, token, fetchImpl = fetch)
         signal: AbortSignal.timeout(30_000),
       }
     );
-  } catch {
-    fail("GitHub App authentication failed");
+  } catch (error) {
+    fail(safeAuthFailure(error));
   }
-  if (!response.ok) fail("installation cannot access repository");
+  if (!response.ok) fail(`installation cannot access repository${Number.isInteger(response.status) ? ` (HTTP ${response.status})` : ""}`);
   return {
     authenticated: true,
     repository_authorized: true,
@@ -306,10 +315,12 @@ async function main() {
         authenticated: gitResult.exit_code === 0,
         transport: "https",
         dry_run: true,
+        operation_completed: "push_dry_run",
+        requested_push_completed: false,
         ...gitResult,
         credential_exposed: false,
         summary: gitResult.exit_code === 0
-          ? "Authenticated push dry run succeeded; no refs were changed."
+          ? "Authenticated push dry run succeeded; no refs were changed. If a real push was requested, call push next, then ls_remote to verify it."
           : "Authenticated push dry run failed; no refs were changed.",
       }
     : gitResult;

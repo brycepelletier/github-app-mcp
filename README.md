@@ -248,3 +248,9 @@ receives the PEM, installation tokens, or GitHub MCP tools.
 ## License
 
 MIT. See `LICENSE`.
+
+## Preflight evidence and safe diagnostics
+
+push_dry_run responses explicitly identify operation_completed=push_dry_run and requested_push_completed=false. A successful preflight does not mutate refs or automatically authorize a push. When a real push is already delegated, GitHub Operator must call push next and verify ls_remote against the intended commit.
+
+Authentication failures retain only allowlisted HTTP status or network codes, never upstream response bodies/headers, credentials, or request objects. A failure for one installation-scoped repository is not proof that another authorized repository is unavailable.

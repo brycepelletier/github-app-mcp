@@ -107,7 +107,8 @@ export function classifyGitFailure({ mode, operation, payload = {}, message = ""
       "REMOTE_AUTHORIZATION_FAILED",
       "GitHub authentication or repository authorization failed.",
       "external_blocker",
-      [action("github/git_remote", { operation: "auth_check", remote }, "Re-run the authoritative repository authorization gate.")]
+      [action("github/git_remote", { operation: "auth_check", remote }, "Re-run the authoritative repository authorization gate after the authorization or network prerequisite changes.")],
+      { diagnostic: detail.match(/\(HTTP [45]\d{2}\)|\(network [A-Z_]+\)/)?.[0] || "No safe upstream status available" }
     );
   }
 

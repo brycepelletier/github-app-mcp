@@ -148,3 +148,10 @@ test("structured construction exposes no arbitrary command or host path fields",
     assert.throws(() => gitRemoteSchema.parse({ operation: "auth_check", [field]: input[field] }));
   }
 });
+
+test("auth diagnostics expose only allowlisted HTTP/network metadata", async () => {
+  const { safeAuthFailure } = await import('../runtime/git-helper.mjs');
+  assert.equal(safeAuthFailure({status:401,message:'SECRET',request:{headers:{authorization:'SECRET'}}}), 'GitHub App authentication failed (HTTP 401)');
+  assert.equal(safeAuthFailure({cause:{code:'ENOTFOUND'},message:'SECRET'}), 'GitHub App authentication failed (network ENOTFOUND)');
+  assert.equal(safeAuthFailure({code:'SECRET',message:'SECRET'}), 'GitHub App authentication failed');
+});
